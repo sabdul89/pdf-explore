@@ -1,31 +1,53 @@
-from fastapi import APIRouter
-import requests
-
+from fastapi import APIRouter, HTTPException
+import tempfile, os, json
 from app.supabase_client import supabase
-from app.storage import get_public_url, upload_to_bucket
-from app.fill_pdf import fill_pdf
-from app.flatten_pdf import flatten_pdf
+from app.config import SUPABASE_BUCKET
+from pypdf import PdfReader, PdfWriter
 
-router = APIRouter()
+router = APIRouter(prefix="/fill")
 
-@router.post("/")
-def fill(data: dict):
-    file_id = data["file_id"]
-    values = data["values"]
+@router.post("/{file_id}")
+async def fill_pdf(file_id: str, payload: dict):
+    try:
+        db_res = supabase.table('files').select('*').eq('file_id', file_id).execute()
+        if not db_res.data:
+            raise HTTPException(status_code=404, detail='File not found')
+        row = db_res.data[0]
+        storage_path = row.get('storage_path')
 
-    original_url = get_public_url(f"original/{file_id}.pdf")
-    pdf_bytes = requests.get(original_url).content
+        download = supabase.storage.from_(SUPABASE_BUCKET).download(storage_path)
+        if not download:
+            raise HTTPException(status_code=404, detail='PDF missing in storage')
 
-    filled_pdf = fill_pdf(pdf_bytes, values)
-    flattened_pdf = flatten_pdf(filled_pdf)
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as tmp:
+            tmp.write(download)
+            tmp_path = tmp.name
 
-    path = f"filled/{file_id}.pdf"
-    upload_to_bucket(path, flattened_pdf)
+        reader = PdfReader(tmp_path)
+        writer = PdfWriter()
+        for p in reader.pages:
+            writer.add_page(p)
 
-    supabase.table("files").update({
-        "final_values": values,
-        "final_pdf_path": path,
-        "status": "filled"
-    }).eq("file_id", file_id).execute()
+        # try update form fields if present
+        try:
+            writer.update_page_form_field_values(writer.pages[0], payload)
+        except Exception:
+            pass
 
-    return {"filled_path": path}
+        out_path = f"/tmp/{file_id}_filled.pdf"
+        with open(out_path, 'wb') as f:
+            writer.write(f)
+
+        filled_path = f"filled/{file_id}.pdf"
+        supabase.storage.from_(SUPABASE_BUCKET).upload(filled_path, out_path)
+        supabase.table('files').update({'final_pdf_path': filled_path, 'status':'filled'}).eq('file_id', file_id).execute()
+
+        return {'status':'filled','filled_path': filled_path}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f'Fill failed: {str(e)}')
+    finally:
+        try: os.remove(tmp_path)
+        except: pass

@@ -1,32 +1,55 @@
-from fastapi import APIRouter
-import requests
-
+from fastapi import APIRouter, HTTPException
+import tempfile, os
 from app.supabase_client import supabase
-from app.storage import get_public_url
-from app.parse_pdf import extract_text_blocks, detect_form_fields
-from app.ocr_fallback import ocr_pdf
+from app.config import SUPABASE_BUCKET
+from app.utils.hybrid_extractor import extract_hybrid_raw
+from app.utils.ocr_to_fields import parse_ocr_to_fields
 
-router = APIRouter()
+router = APIRouter(prefix="/parse")
 
 @router.get("/{file_id}")
-def parse(file_id: str):
-    file = supabase.table("files").select("*").eq("file_id", file_id).single().execute().data
+async def parse_pdf(file_id: str):
+    try:
+        db_res = supabase.table('files').select('*').eq('file_id', file_id).execute()
+        if not db_res.data:
+            raise HTTPException(status_code=404, detail='File not found')
 
-    url = get_public_url(f"original/{file_id}.pdf")
-    pdf_bytes = requests.get(url).content
+        row = db_res.data[0]
+        storage_path = row.get('storage_path')
+        if not storage_path:
+            raise HTTPException(status_code=400, detail='Missing storage_path')
 
-    blocks = extract_text_blocks(pdf_bytes)
-    fields = detect_form_fields(blocks)
+        download = supabase.storage.from_(SUPABASE_BUCKET).download(storage_path)
+        if not download:
+            raise HTTPException(status_code=404, detail='File missing in storage')
 
-    # OCR fallback if no structured fields detected
-    ocr_text = None
-    if len(fields) == 0:
-        ocr_text = ocr_pdf(pdf_bytes)
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as tmp:
+            tmp.write(download)
+            tmp_path = tmp.name
 
-    # Save into DB
-    supabase.table("files").update({
-        "extracted_json": fields,
-        "ocr_text": ocr_text
-    }).eq("file_id", file_id).execute()
+        structured = extract_hybrid_raw(tmp_path)
+        if structured.get('method') in ('form','layout') and structured.get('fields'):
+            schema = {'method': structured['method'], 'fields': structured['fields'], 'json_schema': structured.get('json_schema')}
+            supabase.table('files').update({'schema_json': schema}).eq('file_id', file_id).execute()
+            return schema
 
-    return {"fields": fields, "ocr_text": ocr_text}
+        # OCR fallback: use ocr_to_fields directly
+        # hybrid_extractor already did OCR and returned parsed json for 'ocr' as well
+        if structured.get('method') == 'ocr' and structured.get('json_schema'):
+            supabase.table('files').update({'schema_json': structured['json_schema']}).eq('file_id', file_id).execute()
+            return {'method':'ocr','fields': structured.get('fields'),'json_schema': structured.get('json_schema'),'metadata': structured.get('metadata')}
+
+        # Safety fallback: run OCR text and parse
+        from app.utils.ocr_utils import ocr_pdf_text
+        ocr_text = ocr_pdf_text(tmp_path)
+        parsed = parse_ocr_to_fields(ocr_text)
+        supabase.table('files').update({'schema_json': parsed['json_schema']}).eq('file_id', file_id).execute()
+        return {'method':'ocr_fallback','fields': parsed['fields'],'json_schema': parsed['json_schema']}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f'Parse failed: {str(e)}')
+    finally:
+        try: os.remove(tmp_path)
+        except: pass

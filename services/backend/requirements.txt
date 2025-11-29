@@ -1,11 +1,11 @@
 fastapi
-uvicorn
+uvicorn[standard]
 python-dotenv
 pymupdf
-pytesseract
-pillow
 pypdf
 supabase
-requests
-python-multipart
-aiofiles
+pytesseract
+pillow
+opencv-python-headless
+numpy
+spacy
