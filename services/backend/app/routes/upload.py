@@ -7,6 +7,7 @@ from app.supabase_client import supabase
 from app.config import SUPABASE_BUCKET
 from app.utils.ocr import extract_with_ocr
 from app.utils.parser import extract_fields_pymupdf
+from app.utils.hybrid_extractor import extract_hybrid
 
 router = APIRouter()
 
@@ -47,7 +48,7 @@ async def upload_pdf(file: UploadFile = File(...)):
         # -------------------------------
         try:
             doc = fitz.open(temp_path)
-            fields = extract_fields_pymupdf(doc)  # Your text/underline parser
+            fields = extract_hybrid(temp_path)  # Your text/underline parser
             doc.close()
 
             # If we found nothing, fallback to OCR

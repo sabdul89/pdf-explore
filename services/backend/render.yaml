@@ -5,6 +5,7 @@ services:
   - type: web
     name: pdf-mvp-backend
     env: docker
+    rootDir: services/backend
     plan: free  # change to "starter" if you want more consistent uptime
     autoDeploy: true
     region: oregon
