@@ -1,0 +1,76 @@
+services:
+  # ------------------------------------------------------
+  # BACKEND WEB SERVICE (FastAPI running in Docker)
+  # ------------------------------------------------------
+  - type: web
+    name: pdf-mvp-backend
+    env: docker
+    plan: free  # change to "starter" if you want more consistent uptime
+    autoDeploy: true
+    region: oregon
+
+    # Render will auto-detect Dockerfile in repo root
+    healthCheckPath: /health
+
+    envVars:
+      # Basic environment
+      - key: ENV
+        value: production
+
+      # App config
+      - key: SHARE_TOKEN_TTL_HOURS
+        value: "24"
+
+      # Supabase URLs
+      - key: SUPABASE_URL
+        sync: false     # set in Render dashboard
+      - key: SUPABASE_SERVICE_KEY
+        sync: false
+      - key: SUPABASE_ANON_KEY
+        sync: false
+      - key: SUPABASE_DB_URL
+        sync: false
+
+      # Storage bucket
+      - key: SUPABASE_BUCKET
+        value: pdf-mvp
+
+      # Application URLs
+      - key: APP_BASE_URL
+        sync: false
+      - key: FRONTEND_URL
+        sync: false
+
+      # Security
+      - key: JWT_SECRET
+        sync: false
+
+      # PDF temp config
+      - key: TEMP_DIR
+        value: /tmp
+      - key: MAX_UPLOAD_MB
+        value: "25"
+
+  # ------------------------------------------------------
+  # OPTIONAL DAILY CLEANUP CRON JOB
+  # ------------------------------------------------------
+  - type: cron
+    name: pdf-mvp-cleanup
+    schedule: "0 3 * * *"   # runs every day at 3AM UTC
+    env: docker
+    region: oregon
+
+    # Command to run cleanup
+    # Needs Dockerfile in same repo
+    command: "python app/cleanup.py"
+
+    envVars:
+      - key: ENV
+        value: production
+
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_KEY
+        sync: false
+      - key: SUPABASE_BUCKET
+        value: pdf-mvp
