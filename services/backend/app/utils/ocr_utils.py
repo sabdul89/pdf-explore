@@ -71,9 +71,24 @@ def ocr_pdf_pages_with_confidence(pdf_path, lang='eng'):
         pil = enhance_image_for_ocr(pil)
         # pytesseract image_to_data gives word-level confidences
         data = pytesseract.image_to_data(pil, lang=lang, output_type=pytesseract.Output.DICT)
-        text = " ".join([w for w in data.get('text', []) if w.strip()!=''])
-        confs = [int(c) for c in data.get('conf', []) if c.isdigit() and int(c) >= 0]
-        avg_conf = float(sum(confs))/len(confs) if len(confs)>0 else 0.0
+
+        text = " ".join([w for w in data.get("text", []) if w.strip() != ""])
+
+        raw_confs = data.get("conf", [])
+        confs = []
+
+        for c in raw_confs:
+            if isinstance(c, int):
+                if c >= 0:
+                    confs.append(c)
+                continue
+            if isinstance(c, str) and c.isdigit():
+                if int(c) >= 0:
+                    confs.append(int(c))
+
+        avg_conf = float(sum(confs)) / len(confs) if len(confs) > 0 else 0.0
+
         results.append({"page": p, "text": text, "avg_conf": avg_conf})
+
     doc.close()
     return results
