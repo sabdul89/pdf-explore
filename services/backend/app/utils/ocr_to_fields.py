@@ -1,89 +1,89 @@
+
 import re
 from collections import defaultdict
+try:
+    import spacy
+    _nlp = None
+    try:
+        _nlp = spacy.load("en_core_web_sm")
+    except Exception:
+        # model may not be installed; handle gracefully
+        _nlp = None
+except Exception:
+    _nlp = None
+
+def extract_entities_with_spacy(text):
+    if not _nlp:
+        return []
+    doc = _nlp(text)
+    ents = [{"text": ent.text, "label": ent.label_} for ent in doc.ents]
+    return ents
 
 def parse_ocr_to_fields(ocr_text: str):
-    """
-    Convert OCR text into a list of candidate fields and a JSON Schema.
-    Returns: dict { fields: [...], json_schema: {...} }
-    """
+    norm = ocr_text.replace("’","'").replace("\u2013","-").replace("\u2014","-")
     fields = []
-    schema_props = {}
-    used_keys = set()
-    text = ocr_text
-    norm = text.replace("’","'").replace("\u2013","-").replace("\u2014","-")
+    props = {}
+    used = set()
 
-    # 1) Label: value patterns
-    for m in re.finditer(r'([A-Za-z0-9 \-/]{2,40}):\s*(.+)', norm):
+    # 1) repeated-block detection example for the fence form
+    anchor = "who resides at"
+    lines = [ln.strip() for ln in norm.splitlines() if ln.strip()!='']
+    anchors_idx = [i for i,ln in enumerate(lines) if anchor in ln.lower()]
+    counter = 0
+    for idx in anchors_idx:
+        counter += 1
+        name = ""
+        addr = ""
+        if idx-1 >=0:
+            candidate = lines[idx-1]
+            if candidate.lower()!='x':
+                name = candidate
+        # gather address lines until 'will allow' or next anchor
+        j = idx+1
+        while j < len(lines) and "will allow" not in lines[j].lower() and "x" not in lines[j].lower():
+            addr = (addr + " " + lines[j]).strip()
+            j += 1
+        k1 = f"neighbor_{counter}_name"
+        k2 = f"neighbor_{counter}_address"
+        fields.append({"key":k1,"label":f"Neighbor {counter} - Name","sample_value":name})
+        fields.append({"key":k2,"label":f"Neighbor {counter} - Address","sample_value":addr})
+        props[k1] = {"type":"string","title":f"Neighbor {counter} - Name","default":name}
+        props[k2] = {"type":"string","title":f"Neighbor {counter} - Address","default":addr}
+
+    # 2) generic label:value capture
+    for m in re.finditer(r'([\w \/\-]{2,40}):\s*(.+)', norm):
         label = m.group(1).strip()
         val = m.group(2).strip()
         key = re.sub(r'[^a-z0-9_]+', '_', label.lower()).strip('_')
-        if not key:
-            continue
-        if key in used_keys:
+        if key in used:
             i = 2
-            while f"{key}_{i}" in used_keys:
+            while f"{key}_{i}" in used:
                 i += 1
             key = f"{key}_{i}"
-        used_keys.add(key)
-        fields.append({"key": key, "label": label, "hint": "", "sample_value": val})
-        schema_props[key] = {"type":"string","title":label,"default":val}
+        used.add(key)
+        fields.append({"key":key,"label":label,"sample_value":val})
+        props[key] = {"type":"string","title":label,"default":val}
 
-    # 2) Repeated anchor detection (e.g., "who resides at")
-    anchor_phrase = "who resides at"
-    occurrences = [m.start() for m in re.finditer(re.escape(anchor_phrase), norm, flags=re.IGNORECASE)]
-    if occurrences:
-        lines = [ln.strip() for ln in norm.splitlines() if ln.strip()!='']
-        anchor_lines_idx = []
-        for i, ln in enumerate(lines):
-            if anchor_phrase in ln.lower():
-                anchor_lines_idx.append(i)
-        idx_counter = defaultdict(int)
-        for idx in anchor_lines_idx:
-            name_candidate = ""
-            if idx-1 >= 0:
-                prev = lines[idx-1]
-                if prev.lower() != 'x':
-                    name_candidate = prev
-            address_candidate = ""
-            j = idx+1
-            while j < len(lines) and "will allow" not in lines[j].lower() and "x" not in lines[j].lower():
-                address_candidate += ((" " + lines[j]) if address_candidate else lines[j])
-                j += 1
-            base = "neighbor"
-            idx_counter[base] += 1
-            i_num = idx_counter[base]
-            name_key = f"neighbor_{i_num}_name"
-            addr_key = f"neighbor_{i_num}_address"
-            name_sample = name_candidate if name_candidate else ""
-            addr_sample = address_candidate if address_candidate else ""
-            fields.append({"key": name_key, "label": f"Neighbor {i_num} - Name", "hint":"As written on form", "sample_value": name_sample})
-            fields.append({"key": addr_key, "label": f"Neighbor {i_num} - Address", "hint":"Full address", "sample_value": addr_sample})
-            schema_props[name_key] = {"type":"string","title":f"Neighbor {i_num} - Name","default":name_sample}
-            schema_props[addr_key] = {"type":"string","title":f"Neighbor {i_num} - Address","default":addr_sample}
+    # 3) spaCy NER enrichment if available
+    ents = extract_entities_with_spacy(norm)
+    # Map PERSON -> possible name fields, GPE/LOC -> address
+    person_idx = 0
+    for ent in ents:
+        if ent["label"] in ("PERSON",):
+            person_idx += 1
+            key = f"person_{person_idx}_name"
+            if key not in props:
+                props[key] = {"type":"string","title":f"Person {person_idx} - Name","default":ent["text"]}
+                fields.append({"key":key,"label":f"Person {person_idx} - Name","sample_value":ent["text"]})
+        if ent["label"] in ("GPE","LOC","FAC","ADDRESS"):
+            key = f"place_{len(props)+1}"
+            props[key] = {"type":"string","title":"Location","default":ent["text"]}
+            fields.append({"key":key,"label":"Location","sample_value":ent["text"]})
 
-    # 3) Common single-line field patterns
-    lines = norm.splitlines()
-    for ln in lines:
-        ln_stripped = ln.strip()
-        if len(ln_stripped) < 3:
-            continue
-        low = ln_stripped.lower()
-        if ('name' in low or 'owner' in low) and ':' in ln_stripped:
-            parts = ln_stripped.split(':',1)
-            label = parts[0].strip()
-            val = parts[1].strip()
-            key = re.sub(r'[^a-z0-9_]+', '_', label.lower()).strip('_')
-            if key and key not in used_keys:
-                used_keys.add(key)
-                fields.append({"key": key, "label": label, "hint": "", "sample_value": val})
-                schema_props[key] = {"type":"string","title":label,"default":val}
-
-    # 4) Fallback raw_text
+    # 4) fallback raw_text if nothing found
     if not fields:
-        fields.append({"key":"raw_text","label":"Scanned Text","hint":"Full OCR text — edit to extract fields","sample_value": norm})
-        schema_props["raw_text"] = {"type":"string","title":"Scanned Text","default":norm}
-    else:
-        schema_props["__raw_ocr_text"] = {"type":"string","title":"__raw_ocr_text","default":norm}
+        props["raw_text"] = {"type":"string","title":"Scanned Text","default":norm}
+        fields.append({"key":"raw_text","label":"Scanned Text","sample_value":norm})
 
-    json_schema = {"title":"Extracted Form","type":"object","properties": schema_props}
-    return {"fields": fields, "json_schema": json_schema}
+    schema = {"title":"Extracted Form","type":"object","properties": props}
+    return {"fields": fields, "json_schema": schema}
