@@ -5,6 +5,7 @@ from app.routes.fill import router as fill_router
 from app.routes.flatten import router as flatten_router
 from app.routes.share import router as share_router
 from app.routes.health import router as health_router
+from fastapi.middleware.cors import CORSMiddleware
 
 app = FastAPI(title="PDF Explore Backend - Enterprise OCR")
 
