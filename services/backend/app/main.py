@@ -8,6 +8,15 @@ from app.routes.health import router as health_router
 
 app = FastAPI(title="PDF Explore Backend - Enterprise OCR")
 
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],   # allow ALL frontends
+    allow_methods=["*"],
+    allow_headers=["*"],
+    expose_headers=["*"],
+)
+
+
 app.include_router(upload_router)
 app.include_router(parse_router)
 app.include_router(fill_router)
